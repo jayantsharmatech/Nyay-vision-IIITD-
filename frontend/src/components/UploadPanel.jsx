@@ -13,7 +13,7 @@ export default function UploadPanel({ onScan, busy, queuedCount }) {
   function removeFile(index) { setFiles(current => current.filter((_, i) => i !== index)); setSelectionError('') }
   return <div className="audit-layout"><section className="card upload-card"><div className="section-heading"><div><div className="eyebrow">START A NEW AUDIT</div><h2>Upload packaging images</h2><p>Select all views of one product. They will be combined into a single audit and report.</p></div><div className="secure-pill"><ShieldCheck size={14}/> Private & secure</div></div>
     <div className={`dropzone ${dragging?'dragging':''}`} onDragOver={e=>{e.preventDefault();setDragging(true)}} onDragLeave={()=>setDragging(false)} onDrop={e=>{e.preventDefault();setDragging(false);addFiles(e.dataTransfer.files)}} onClick={()=>inputRef.current?.click()}>
-      <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={e=>{addFiles(e.target.files);e.target.value=''}} />
+      <input ref={inputRef} type="file" accept="image/*" multiple hidden onChange={e=>{addFiles(e.target.files);e.target.value=''}} />
       <div className="upload-icon"><Upload size={21}/></div><h3>Drop your images here, or <button className="browse-button" type="button" onClick={e=>{e.stopPropagation();inputRef.current?.click()}}>browse files</button></h3><p>PNG, JPG or WEBP · 12 MB each · 48 MB combined · up to 10 views</p>
       <button type="button" className="camera-hint" onClick={e=>{e.stopPropagation();inputRef.current?.click()}}><Camera size={14}/> Use a clear, well-lit photo</button>
     </div>
