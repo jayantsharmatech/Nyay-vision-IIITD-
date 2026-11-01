@@ -1,57 +1,246 @@
-# Nyay Vision — Metrology Guard AI
+# Nyay Vision
 
-An AI-assisted packaging label audit workspace for common retail declarations under India’s Legal Metrology (Packaged Commodities) Rules, 2011. The application is split into `backend/` (FastAPI, OpenAI vision, SQLite, PDF reports) and `frontend/` (React + Vite dashboard).
+**Metrology Guard AI - packaging label review for Indian market surveillance.**
 
-## Start locally
+Nyay Vision helps an officer review packaged-product declarations from package photos. It uses OpenAI vision models to extract visible label information, identifies a likely product category, applies category-aware screening rules, and creates a structured inspection report.
 
-Requirements: Python 3.10+ and Node.js 18+.
+Upload one photo or several views of **the same product**. The multi-image flow combines the views into one extraction, one compliance assessment, and one report. A model match check prevents uncertain or unrelated product photos from being merged.
 
-1. Configure the backend:
+> **Operational aid only.** Nyay Vision does not make a legal determination, calculate a payable fine, or issue an official notice or challan. An officer must verify the product, complete package, applicable rules, evidence, jurisdiction, and prior-offence history.
 
-   ```bash
-   cd backend
-   python -m venv .venv
-   source .venv/bin/activate  # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   cp .env.example .env
-   ```
+## Contents
 
-2. Add your OpenAI API key to `backend/.env` (`OPENAI_API_KEY=...`). The vision flow uses the OpenAI Responses API. The key stays server-side. The default is `gpt-4.1-mini` with `gpt-4.1` fallback; set model IDs available to your OpenAI project as needed.
+- [Capabilities](#capabilities)
+- [How it works](#how-it-works)
+- [Technology](#technology)
+- [Repository layout](#repository-layout)
+- [Run locally](#run-locally)
+- [Configuration](#configuration)
+- [Use the application](#use-the-application)
+- [HTTP API](#http-api)
+- [Deployment](#deployment)
+- [Data and security](#data-and-security)
+- [Legal and operational limits](#legal-and-operational-limits)
+- [Troubleshooting](#troubleshooting)
 
-3. Start the API from `backend/`:
+## Capabilities
 
-   ```bash
-   uvicorn main:app --reload --port 8000
-   ```
+- **Single and multi-view audits:** Submit PNG, JPEG/JPG, or WEBP images. A product audit accepts up to 10 views, with a 12 MB per-image limit and a 48 MB combined limit.
+- **Product-aware checks:** OpenAI vision classifies the visible product. The backend selects the applicable screening checklist; for example, food-specific checks are not applied to general non-food products.
+- **Cross-view evidence:** The extractor can find declarations on different package panels, retain per-image source references for text boxes, and flag conflicting values for review.
+- **Structured findings:** Each check is reported as detected, missing, review, or not applicable, with a reference and explanation.
+- **Conditional penalty schedule:** Statutory stages or caps are shown as conditional guidance. The system does not add separate statutory amounts or infer an offence stage from a photo.
+- **Inspection PDF:** Create a printable officer-oriented report with the image set, extracted details, declaration checklist, conditional penalty schedule, and decision path.
+- **Audit history:** Store and retrieve past scans from the backend database.
+- **Offline queue:** When the browser is offline, selected images are saved in IndexedDB and later synchronized as their original single-image or multi-image group.
+- **OpenAI model fallback:** Use the configured primary model and optional fallback model list for vision extraction.
 
-4. In a second terminal:
+## How it works
 
-   ```bash
-   cd frontend
-   npm install
-   cp .env.example .env
-   npm run dev
-   ```
+```mermaid
+flowchart LR
+    A[Officer selects package photos] --> B[React upload workspace]
+    B --> C[FastAPI validates image type and limits]
+    C --> D[OpenAI vision extracts evidence across views]
+    D --> E[Category-aware rule engine]
+    E --> F[SQLite scan history]
+    E --> G[Inspection PDF]
+    F --> H[Results and audit history]
+```
 
-Open the Vite URL (normally `http://localhost:5173`). API docs are at `http://localhost:8000/docs`. SQLite data and generated PDFs are stored in `backend/data/`.
+The model extracts visible text and classification evidence. The backend rule engine decides which checks apply and calculates the screening score. If the uploaded views cannot be confidently matched to one product, the request is rejected so different products are not silently combined.
 
-## Vercel frontend connection
+## Technology
 
-Deploy the FastAPI backend separately from the Vercel frontend. In Vercel project settings, set `VITE_API_URL` to the backend's public base URL (for example, `https://your-api.example.com`, with no trailing slash) and redeploy the frontend. The local `frontend/.env` value points to `localhost` and is only for local development. The backend accepts Vercel preview/production origins; for a custom frontend domain, set `CORS_ALLOW_ORIGINS` on the backend to that full origin.
+| Area | Technology |
+| --- | --- |
+| Frontend | React 18, Vite, lucide-react |
+| Backend | Python, FastAPI, Uvicorn |
+| Vision extraction | OpenAI Responses API with structured JSON output |
+| Persistence | SQLite |
+| PDF reports | ReportLab |
+| Frontend hosting configuration | Vercel |
 
-## What works
+## Repository layout
 
-- Single image or combined multi-view (up to 10 images of the same product) audits with OpenAI vision extraction and model fallback.
-- Strict structured output for extracted label text and per-field `box_2d` coordinates on a 0–1000 grid.
-- Automatic category inference from the package image; no manual product/business/offence selections.
-- Category-aware rules: FSSAI checks are limited to food; general non-food products are not failed for an absent expiry date; medicines and selected regulated groups use product-specific checks or request review.
-- Date normalization, confidence-aware screening score, and conditional penalty exposure based on the applicable statute.
-- Persistent scan history, scan details, and downloadable inspection summary PDFs.
-- Browser IndexedDB queue for uploads made while offline; queued files automatically submit when connected.
-- API health status and key configuration status in the dashboard.
+```text
+.
+├── backend/
+│   ├── main.py           # FastAPI routes and scan orchestration
+│   ├── extraction.py     # OpenAI image extraction and model fallback
+│   ├── rule_engine.py    # Category-aware compliance screening
+│   ├── date_engine.py    # Date normalization helpers
+│   ├── database.py       # SQLite scan history
+│   ├── pdf_generator.py  # Inspection report generation
+│   ├── settings.py       # Backend configuration
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── components/   # Upload, results, history, navigation
+│   │   ├── lib/          # API client and offline queue
+│   │   ├── App.jsx
+│   │   └── styles.css
+│   ├── .env.example
+│   └── package.json
+└── vercel.json           # Vercel frontend build configuration
+```
+
+## Run locally
+
+### Prerequisites
+
+- Python 3.10 or newer
+- Node.js 18 or newer and npm
+- An OpenAI API key with access to the configured vision models
+
+### 1. Configure and start the backend
+
+From the repository root:
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Add your key to `backend/.env`:
+
+```dotenv
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_FALLBACK_MODELS=gpt-4.1
+```
+
+Start the API from the `backend/` directory:
+
+```bash
+uvicorn main:app --reload --port 8000
+```
+
+The API health endpoint is [http://localhost:8000/health](http://localhost:8000/health), and interactive API documentation is available at [http://localhost:8000/docs](http://localhost:8000/docs).
+
+### 2. Configure and start the frontend
+
+In a second terminal, from the repository root:
+
+```bash
+cd frontend
+npm ci
+cp .env.example .env
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173). The local frontend setting points to `http://localhost:8000` by default.
+
+### Production frontend build
+
+```bash
+cd frontend
+npm ci
+npm run build
+```
+
+Vite writes the production site to `frontend/dist/`.
+
+## Configuration
+
+### Backend environment
+
+Create `backend/.env` for local use. Keep the OpenAI key on the backend; do not put it in a frontend `VITE_` variable.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | empty | Server-side key used for vision extraction. Required to scan. |
+| `OPENAI_MODEL` | `gpt-4.1-mini` | Primary model. |
+| `OPENAI_FALLBACK_MODELS` | `gpt-4.1` | Comma-separated fallback model IDs. |
+| `DATABASE_PATH` | `data/nyay_vision.db` | SQLite database path, relative to `backend/`. |
+| `CORS_ALLOW_ORIGINS` | empty | Optional comma-separated frontend origins, including scheme, for custom domains. |
+
+The backend also allows local Vite origins and Vercel `*.vercel.app` origins.
+
+### Frontend environment
+
+| Variable | Local value | Purpose |
+| --- | --- | --- |
+| `VITE_API_URL` | `http://localhost:8000` | Public base URL of the FastAPI backend. Set at frontend build time. |
+
+Use a backend URL with no trailing slash. A browser visiting a Vercel site cannot use `localhost` to reach a backend running on the developer's computer.
+
+## Use the application
+
+1. Open **Packaging audit** and choose one or more supported photos of the same product.
+2. Include clear views of different package panels; keep text legible and avoid glare.
+3. Run the audit. The app submits the selected views together and creates one result.
+4. Review the inferred category and each detected, missing, or uncertain declaration against the full physical package.
+5. Follow the officer decision path, verify the applicable law and prior-offence history, then record the authorized action.
+6. Download the inspection report or reopen the result from Audit history.
+
+The model reports only what it can read in the supplied views. A declaration not found in a photo may be printed on another side or insert.
+
+## HTTP API
+
+All image uploads use `multipart/form-data`.
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/health` | Service status and whether the OpenAI key is configured. |
+| `POST` | `/scan` | Audit one image. Form field: `file`. |
+| `POST` | `/scan-multi` | Audit several views of one product together. Repeat form field: `files`. |
+| `GET` | `/history?limit=100` | List recent scan records. Maximum limit: 500. |
+| `GET` | `/scan/{scan_id}` | Retrieve a saved scan and its findings. |
+| `GET` | `/report/{scan_id}` | Download the generated PDF report. |
+
+Both scan routes return a single scan record containing the category, extraction, audit, image count, and source filenames. `/scan-multi` accepts up to 10 images; all views must represent one product. Supported formats are PNG, JPEG/JPG, and WEBP. The service limits each image to 12 MB and the whole request to 48 MB.
+
+Example multi-image request:
+
+```bash
+curl -X POST http://localhost:8000/scan-multi \
+  -F 'files=@front.jpg' \
+  -F 'files=@back.jpg'
+```
+
+FastAPI's interactive request interface is available at `/docs` while the backend is running.
+
+## Deployment
+
+The repository's Vercel configuration builds and serves the **frontend**. Deploy the FastAPI backend separately to a Python-compatible host.
+
+1. Deploy the backend and configure `OPENAI_API_KEY`, model settings, and a persistent storage location for its SQLite database and generated reports.
+2. In Vercel project settings, set `VITE_API_URL` to the backend's public base URL.
+3. Redeploy the frontend after changing `VITE_API_URL`; Vite embeds this value during the build.
+4. If using a custom frontend domain, set `CORS_ALLOW_ORIGINS` on the backend to that exact origin, such as `https://audit.example.com`.
+5. Verify the backend `/health` endpoint and submit a small test image from the deployed site.
+
+The backend stores scans in SQLite and reports in `backend/data/reports/`. Use persistent storage on the backend host; ephemeral filesystems can lose scan history and reports on restart. The frontend-only Vercel deployment does not host the FastAPI service or its database.
+
+## Data and security
+
+- Keep `OPENAI_API_KEY` in the backend environment only. Never commit `.env` files or expose the key in frontend code.
+- Image bytes are sent from the backend to the configured OpenAI model for extraction. Use only images you are authorized to process.
+- Offline uploads are held in the user's browser IndexedDB until the backend is reachable and the group can sync.
+- The backend database contains scan metadata and extracted results. Apply access control, backups, retention, and persistent storage appropriate to your deployment.
+- Restrict custom CORS origins to the frontend domains you control.
 
 ## Legal and operational limits
 
-This is an AI-assisted first-pass screening aid. Package classification, exemptions, amendments, declarations, legibility, quantity tolerances, and enforcement depend on facts and current rules. The product image cannot reveal prior offence history, so Legal Metrology section 36 exposure is shown by offence stage: first offence improvement notice, second offence penalty up to INR 5 lakh, and subsequent offences INR 25–50 lakh. These are statutory stages, not a prediction of the penalty an authority will impose. Food-label risk may separately reference the Food Safety and Standards Act section 52 cap; overlapping amounts are not added. The app does not issue a government challan or legal notice.
+Nyay Vision is an AI-assisted first-pass review tool, not a substitute for statutory inspection, legal advice, or an adjudication. Image analysis cannot establish the full product category, pack scope, exemptions, legibility, quantity tolerance, prior offences, jurisdiction, or all current rule requirements. Officers must independently verify the physical product and applicable law.
 
-Rule references checked against the Department of Consumer Affairs' [Legal Metrology rules and amendments](https://consumeraffairs.gov.in/pages/legal-metrology-act), the [Jan Vishwas (Amendment of Provisions) Act, 2026](https://consumeraffairs.gov.in/public/upload/files/2026.4.8%20Jan%20Vishwas%20Act%202026_1777014384.pdf), FSSAI's [Labelling and Display Regulations](https://www.fssai.gov.in/upload/uploadfiles/files/Comp_Labelling%20Display_Version%20VIII_09_09_2025.pdf), and the CDSCO [Cosmetics Rules, 2020](https://cdsco.gov.in/opencms/resources/UploadCDSCOWeb/2022/cos_rules/Cosmetics%20Rules%202020.pdf). Product-specific provisions and later amendments still require review where the app flags them.
+Penalty information is displayed as conditional statutory stages or caps, not a predicted or payable fine. The application does not infer prior-offence stage from the image and does not add separate statutory routes together. Do not use its score or report as a legal finding without officer review.
+
+Rule references should be checked against current official publications, including the Department of Consumer Affairs' [Legal Metrology Act and rules](https://consumeraffairs.gov.in/pages/legal-metrology-act), the [Jan Vishwas (Amendment of Provisions) Act, 2026](https://consumeraffairs.gov.in/public/upload/files/2026.4.8%20Jan%20Vishwas%20Act%202026_1777014384.pdf), FSSAI's [Labelling and Display Regulations](https://www.fssai.gov.in/upload/uploadfiles/files/Comp_Labelling%20Display_Version%20VIII_09_09_2025.pdf), and the CDSCO [Cosmetics Rules, 2020](https://cdsco.gov.in/opencms/resources/UploadCDSCOWeb/2022/cos_rules/Cosmetics%20Rules%202020.pdf). Rules and amendments can change; this list is not exhaustive.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| **Backend unavailable** | Start Uvicorn locally or check that `VITE_API_URL` points to the deployed backend. |
+| **OpenAI key required** | Set `OPENAI_API_KEY` in the backend environment and restart the backend. |
+| **CORS or network error on Vercel** | Confirm `VITE_API_URL`, redeploy the frontend, and add a custom frontend domain to `CORS_ALLOW_ORIGINS` on the backend. |
+| **Unsupported image** | Use PNG, JPG/JPEG, or WEBP. HEIC and other formats are not currently accepted. |
+| **Image exceeds limit** | Keep each image below 12 MB and the combined upload below 48 MB. |
+| **Images could not be matched** | Upload views of one product together; submit different products as separate audits. |
+| **OpenAI extraction failed** | Check model access, key permissions, backend logs, and configured primary/fallback model IDs. |
