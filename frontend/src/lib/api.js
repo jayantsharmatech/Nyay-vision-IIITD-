@@ -1,30 +1,35 @@
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
+async function request(path, options) {
+  let response
+  try {
+    response = await fetch(`${API}${path}`, options)
+  } catch {
+    throw new Error(`Could not reach the Nyay Vision backend at ${API}. Start the backend locally or set VITE_API_URL to its deployed address.`)
+  }
+  let result
+  try { result = await response.json() } catch {
+    throw new Error(`The backend returned an unreadable response (${response.status}). Check that the updated backend is running at ${API}.`)
+  }
+  if (!response.ok) throw new Error(result.detail || `Request failed (${response.status})`)
+  return result
+}
+
 export async function getHealth() {
-  const response = await fetch(`${API}/health`)
-  if (!response.ok) throw new Error('API unavailable')
-  return response.json()
+  return request('/health')
 }
 export async function getHistory() {
-  const response = await fetch(`${API}/history`)
-  if (!response.ok) throw new Error('Could not load scan history')
-  return (await response.json()).items
+  return (await request('/history')).items
 }
 export async function submitScan(file) {
   const body = new FormData()
   body.append('file', file)
-  const response = await fetch(`${API}/scan`, { method: 'POST', body })
-  const result = await response.json()
-  if (!response.ok) throw new Error(result.detail || 'Scan failed')
-  return result
+  return request('/scan', { method: 'POST', body })
 }
 export async function submitBatch(files) {
   const body = new FormData()
   files.forEach(file => body.append('files', file))
-  const response = await fetch(`${API}/scan-multi`, { method: 'POST', body })
-  const result = await response.json()
-  if (!response.ok) throw new Error(result.detail || 'Batch scan failed')
-  return result
+  return request('/scan-multi', { method: 'POST', body })
 }
 export function reportUrl(id) { return `${API}/report/${id}` }
 export function formatDate(value) { return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) }

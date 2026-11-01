@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -21,7 +22,8 @@ REPORTS = ROOT / "data" / "reports"
 REPORTS.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Nyay Vision | Metrology Guard AI", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+allowed_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if origin.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", *allowed_origins], allow_origin_regex=r"https://[a-zA-Z0-9-]+\.vercel\.app", allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
 def startup() -> None:
@@ -40,7 +42,11 @@ async def _scan_group(files: list[UploadFile]) -> dict[str, Any]:
     images = []
     total_size = 0
     for item in files:
-        if item.content_type not in {"image/png", "image/jpeg", "image/webp"}:
+        content_type = item.content_type
+        if content_type not in {"image/png", "image/jpeg", "image/webp"} and content_type in {None, "", "application/octet-stream"}:
+            suffix = Path(item.filename or "").suffix.lower()
+            content_type = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}.get(suffix)
+        if content_type not in {"image/png", "image/jpeg", "image/webp"}:
             raise HTTPException(415, f"{item.filename or 'A file'} is not an image. Upload PNG, JPG, or WEBP photos.")
         payload = await item.read()
         if len(payload) > 12 * 1024 * 1024:
@@ -48,7 +54,7 @@ async def _scan_group(files: list[UploadFile]) -> dict[str, Any]:
         total_size += len(payload)
         if total_size > 48 * 1024 * 1024:
             raise HTTPException(413, "The combined images must be smaller than 48 MB.")
-        images.append((payload, item.content_type, item.filename or f"package view {len(images) + 1}"))
+        images.append((payload, content_type, item.filename or f"package view {len(images) + 1}"))
     try:
         if len(images) == 1:
             extracted = await extract_label(images[0][0], images[0][1])

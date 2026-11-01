@@ -35,9 +35,13 @@ Requirements: Python 3.10+ and Node.js 18+.
 
 Open the Vite URL (normally `http://localhost:5173`). API docs are at `http://localhost:8000/docs`. SQLite data and generated PDFs are stored in `backend/data/`.
 
+## Vercel frontend connection
+
+Deploy the FastAPI backend separately from the Vercel frontend. In Vercel project settings, set `VITE_API_URL` to the backend's public base URL (for example, `https://your-api.example.com`, with no trailing slash) and redeploy the frontend. The local `frontend/.env` value points to `localhost` and is only for local development. The backend accepts Vercel preview/production origins; for a custom frontend domain, set `CORS_ALLOW_ORIGINS` on the backend to that full origin.
+
 ## What works
 
-- Single and batch (up to 10) image audits with OpenAI vision extraction and model fallback.
+- Single image or combined multi-view (up to 10 images of the same product) audits with OpenAI vision extraction and model fallback.
 - Strict structured output for extracted label text and per-field `box_2d` coordinates on a 0–1000 grid.
 - Automatic category inference from the package image; no manual product/business/offence selections.
 - Category-aware rules: FSSAI checks are limited to food; general non-food products are not failed for an absent expiry date; medicines and selected regulated groups use product-specific checks or request review.
