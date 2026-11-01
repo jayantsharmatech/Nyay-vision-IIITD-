@@ -1,6 +1,6 @@
 import { Search, Download, FileSearch, ChevronRight } from 'lucide-react'
 import { formatDate, reportUrl } from '../lib/api'
-import { useState } from 'react'
+import React, { useState } from 'react'
 export default function HistoryPanel({items,onOpen}) {
  const [query,setQuery]=useState('')
  const rows=items.filter(x=>(x.extraction?.product_name||x.filename||'').toLowerCase().includes(query.toLowerCase()))

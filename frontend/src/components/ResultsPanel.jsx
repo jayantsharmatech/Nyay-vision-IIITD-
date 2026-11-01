@@ -1,3 +1,4 @@
+import React from 'react'
 import { CheckCircle2, AlertTriangle, XCircle, Download, ArrowLeft, RotateCcw, ShieldCheck, CircleHelp } from 'lucide-react'
 import { reportUrl, formatDate } from '../lib/api'
 

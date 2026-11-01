@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import React, { useRef, useState } from 'react'
 import { Upload, Image as ImageIcon, X, ShieldCheck, Sparkles, Camera, ScanSearch } from 'lucide-react'
 
 export default function UploadPanel({ onScan, busy, queuedCount }) {

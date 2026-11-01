@@ -1,3 +1,4 @@
+import React from 'react'
 import { ShieldCheck, LayoutDashboard, ScanLine, History, BookOpen, Settings, CircleHelp, ChevronLeft, ChevronRight } from 'lucide-react'
 
 export default function Sidebar({ active, setActive, collapsed, setCollapsed }) {
