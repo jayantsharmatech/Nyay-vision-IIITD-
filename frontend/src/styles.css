@@ -133,6 +133,11 @@ button { cursor: pointer; }
 .category-summary span { padding: 3px 7px; border-radius: 12px; color: #617e78; background: #eef6f4; font-size: 8px; }
 .category-evidence { margin: -5px 0 10px; color: #83929c; font-size: 9px; }
 .applicability-strip { margin: 0 0 14px; padding: 9px 11px; border: 1px solid #e5ebed; border-radius: 6px; display: flex; align-items: center; gap: 10px; color: #778793; background: #fff; font-size: 9px; }
+.officer-actions { margin: 0 0 15px; padding: 18px 20px; }
+.officer-actions ol { margin: 8px 0 0; padding-left: 21px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 30px; row-gap: 8px; color: #607080; font-size: 11px; line-height: 1.55; }
+.officer-actions li { padding-left: 3px; }
+.officer-actions li b { color: #263b50; }
+.review-only { align-self: flex-start; border-radius: 4px; padding: 6px 8px; background: #fff5e7; color: #9b5c12; font-size: 8px; font-weight: 700; letter-spacing: .07em; white-space: nowrap; }
 .applicability-tag { padding: 4px 7px; border-radius: 4px; font-weight: 600; }
 .applicability-tag.applies { color: #856119; background: #fbf3e3; }
 .applicability-tag.not-applies { color: #24745f; background: #e9f5ef; }
@@ -144,4 +149,4 @@ button { cursor: pointer; }
 .fine-card h3 { font-size: 14px; line-height: 1.4; }
 .outcome-pill.manual_review { color: #a66d0e; background: #fff5e4; }
 .check-tag.not_applicable { color: #617e78; background: #eef4f3; }
-@media (max-width: 560px) { .applicability-strip { align-items: flex-start; flex-direction: column; gap: 6px; } }
+@media (max-width: 560px) { .applicability-strip { align-items: flex-start; flex-direction: column; gap: 6px; } .officer-actions { padding: 14px; } .officer-actions ol { grid-template-columns: 1fr; } }
