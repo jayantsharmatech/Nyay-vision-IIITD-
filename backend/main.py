@@ -4,22 +4,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import tempfile
 from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from database import initialize, get_scan, list_scans, save_scan
 from date_engine import normalize_dates
 from extraction import extract_label, extract_product_views
 from pdf_generator import create_report
 from rule_engine import evaluate_compliance
-
-ROOT = Path(__file__).parent
-REPORTS = ROOT / "data" / "reports"
-REPORTS.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Nyay Vision | Metrology Guard AI", version="1.0.0")
 allowed_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if origin.strip()]
@@ -32,7 +30,7 @@ def startup() -> None:
 @app.get("/health")
 def health() -> dict[str, Any]:
     from settings import settings
-    return {"status": "ok", "service": "nyay-vision", "openai_configured": bool(settings.openai_api_key)}
+    return {"status": "ok", "service": "nyay-vision", "openai_configured": bool(settings.openai_api_key), "persistence": "dynamodb" if settings.dynamodb_table else "sqlite"}
 
 async def _scan_group(files: list[UploadFile]) -> dict[str, Any]:
     if not files:
@@ -71,8 +69,6 @@ async def _scan_group(files: list[UploadFile]) -> dict[str, Any]:
     scan_id = str(uuid4())
     record = {"scan_id": scan_id, "created_at": datetime.now(timezone.utc).isoformat(), "filename": ", ".join(name for _, _, name in images), "image_count": len(images), "image_files": [name for _, _, name in images], "category": audit["category"]["id"], "category_info": audit["category"], "extraction": extracted, "audit": audit, "sync_status": "synced"}
     save_scan(record)
-    pdf_path = REPORTS / f"{scan_id}.pdf"
-    create_report(record, pdf_path)
     return record
 
 @app.post("/scan")
@@ -89,13 +85,17 @@ def history(limit: int = 100) -> dict[str, Any]:
 
 @app.get("/report/{scan_id}")
 def report(scan_id: str) -> FileResponse:
-    if not get_scan(scan_id):
+    record = get_scan(scan_id)
+    if not record:
         raise HTTPException(404, "Scan not found.")
-    path = REPORTS / f"{scan_id}.pdf"
-    if not path.exists():
-        record = get_scan(scan_id)
+    with tempfile.NamedTemporaryFile(prefix="nyay-vision-", suffix=".pdf", delete=False) as temp:
+        path = Path(temp.name)
+    try:
         create_report(record, path)
-    return FileResponse(path, media_type="application/pdf", filename=f"Nyay-Vision-{scan_id[:8]}.pdf")
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return FileResponse(path, media_type="application/pdf", filename=f"Nyay-Vision-{scan_id[:8]}.pdf", background=BackgroundTask(path.unlink, missing_ok=True))
 
 @app.get("/scan/{scan_id}")
 def scan_detail(scan_id: str) -> dict[str, Any]:

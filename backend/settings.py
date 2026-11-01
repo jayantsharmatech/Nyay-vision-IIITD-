@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     openai_fallback_models: str = "gpt-4.1"
     database_path: str = "data/nyay_vision.db"
+    dynamodb_table: str = ""
+    aws_region: str = ""
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()

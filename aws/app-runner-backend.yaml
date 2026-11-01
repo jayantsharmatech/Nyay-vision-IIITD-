@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Nyay Vision API on AWS App Runner with durable DynamoDB scan history.
+
+Parameters:
+  ContainerImage:
+    Type: String
+    Description: Full ECR image URI including tag, pushed before deploying this stack.
+  OpenAISecretArn:
+    Type: String
+    Description: ARN of a Secrets Manager secret whose SecretString is the OpenAI API key.
+  FrontendOrigin:
+    Type: String
+    Default: ''
+    Description: Optional exact frontend origin, for example https://nyay-vision.vercel.app.
+  ServiceName:
+    Type: String
+    Default: nyay-vision-api
+    AllowedPattern: '[A-Za-z0-9][A-Za-z0-9-]{3,39}'
+
+Resources:
+  ScanHistory:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: scan_id
+          AttributeType: S
+        - AttributeName: history_partition
+          AttributeType: S
+        - AttributeName: history_sort
+          AttributeType: S
+      KeySchema:
+        - AttributeName: scan_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: history-index
+          KeySchema:
+            - AttributeName: history_partition
+              KeyType: HASH
+            - AttributeName: history_sort
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Application
+          Value: NyayVision
+
+  AppRunnerEcrAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+  AppRunnerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: tasks.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: NyayVisionRuntimeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ScanHistoryAccess
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt ScanHistory.Arn
+                  - !Sub '${ScanHistory.Arn}/index/history-index'
+              - Sid: ReadOpenAISecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref OpenAISecretArn
+
+  BackendService:
+    Type: AWS::AppRunner::Service
+    Properties:
+      ServiceName: !Ref ServiceName
+      SourceConfiguration:
+        AutoDeploymentsEnabled: false
+        AuthenticationConfiguration:
+          AccessRoleArn: !GetAtt AppRunnerEcrAccessRole.Arn
+        ImageRepository:
+          ImageIdentifier: !Ref ContainerImage
+          ImageRepositoryType: ECR
+          ImageConfiguration:
+            Port: '8080'
+            RuntimeEnvironmentVariables:
+              - Name: DYNAMODB_TABLE
+                Value: !Ref ScanHistory
+              - Name: AWS_DEFAULT_REGION
+                Value: !Ref AWS::Region
+              - Name: CORS_ALLOW_ORIGINS
+                Value: !Ref FrontendOrigin
+            RuntimeEnvironmentSecrets:
+              - Name: OPENAI_API_KEY
+                Value: !Ref OpenAISecretArn
+      InstanceConfiguration:
+        Cpu: 1 vCPU
+        Memory: 2 GB
+        InstanceRoleArn: !GetAtt AppRunnerInstanceRole.Arn
+      HealthCheckConfiguration:
+        Protocol: HTTP
+        Path: /health
+        Interval: 10
+        Timeout: 5
+        HealthyThreshold: 1
+        UnhealthyThreshold: 5
+      Tags:
+        - Key: Application
+          Value: NyayVision
+
+Outputs:
+  ApiUrl:
+    Description: HTTPS base URL for the Nyay Vision API.
+    Value: !Sub 'https://${BackendService.ServiceUrl}'

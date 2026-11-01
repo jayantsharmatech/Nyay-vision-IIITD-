@@ -31,7 +31,7 @@ Upload one photo or several views of **the same product**. The multi-image flow 
 - **Structured findings:** Each check is reported as detected, missing, review, or not applicable, with a reference and explanation.
 - **Conditional penalty schedule:** Statutory stages or caps are shown as conditional guidance. The system does not add separate statutory amounts or infer an offence stage from a photo.
 - **Inspection PDF:** Create a printable officer-oriented report with the image set, extracted details, declaration checklist, conditional penalty schedule, and decision path.
-- **Audit history:** Store and retrieve past scans from the backend database.
+- **Audit history:** Store and retrieve past scans from SQLite locally or DynamoDB on AWS.
 - **Offline queue:** When the browser is offline, selected images are saved in IndexedDB and later synchronized as their original single-image or multi-image group.
 - **OpenAI model fallback:** Use the configured primary model and optional fallback model list for vision extraction.
 
@@ -43,7 +43,7 @@ flowchart LR
     B --> C[FastAPI validates image type and limits]
     C --> D[OpenAI vision extracts evidence across views]
     D --> E[Category-aware rule engine]
-    E --> F[SQLite scan history]
+    E --> F[SQLite locally / DynamoDB on AWS]
     E --> G[Inspection PDF]
     F --> H[Results and audit history]
 ```
@@ -57,7 +57,7 @@ The model extracts visible text and classification evidence. The backend rule en
 | Frontend | React 18, Vite, lucide-react |
 | Backend | Python, FastAPI, Uvicorn |
 | Vision extraction | OpenAI Responses API with structured JSON output |
-| Persistence | SQLite |
+| Persistence | SQLite locally; DynamoDB on AWS |
 | PDF reports | ReportLab |
 | Frontend hosting configuration | Vercel |
 
@@ -74,6 +74,9 @@ The model extracts visible text and classification evidence. The backend rule en
 │   ├── pdf_generator.py  # Inspection report generation
 │   ├── settings.py       # Backend configuration
 │   └── requirements.txt
+├── aws/
+│   ├── app-runner-backend.yaml  # App Runner, DynamoDB, and IAM resources
+│   └── deploy-backend.sh        # Build, push, and deploy backend image
 ├── frontend/
 │   ├── src/
 │   │   ├── components/   # Upload, results, history, navigation
@@ -157,6 +160,8 @@ Create `backend/.env` for local use. Keep the OpenAI key on the backend; do not 
 | `OPENAI_MODEL` | `gpt-4.1-mini` | Primary model. |
 | `OPENAI_FALLBACK_MODELS` | `gpt-4.1` | Comma-separated fallback model IDs. |
 | `DATABASE_PATH` | `data/nyay_vision.db` | SQLite database path, relative to `backend/`. |
+| `DYNAMODB_TABLE` | empty | Set on AWS to use DynamoDB instead of local SQLite. |
+| `AWS_DEFAULT_REGION` | SDK default | AWS region for DynamoDB. Set by the App Runner template. |
 | `CORS_ALLOW_ORIGINS` | empty | Optional comma-separated frontend origins, including scheme, for custom domains. |
 
 The backend also allows local Vite origins and Vercel `*.vercel.app` origins.
@@ -207,15 +212,27 @@ FastAPI's interactive request interface is available at `/docs` while the backen
 
 ## Deployment
 
-The repository's Vercel configuration builds and serves the **frontend**. Deploy the FastAPI backend separately to a Python-compatible host.
+The repository's Vercel configuration builds and serves the frontend. The `aws/` folder deploys the FastAPI backend to AWS App Runner, stores durable scan history in DynamoDB, and reads the OpenAI key from AWS Secrets Manager. App Runner provides the API's HTTPS URL. Its container filesystem is temporary, so reports are generated on demand and scan records live in DynamoDB.
 
-1. Deploy the backend and configure `OPENAI_API_KEY`, model settings, and a persistent storage location for its SQLite database and generated reports.
-2. In Vercel project settings, set `VITE_API_URL` to the backend's public base URL.
-3. Redeploy the frontend after changing `VITE_API_URL`; Vite embeds this value during the build.
-4. If using a custom frontend domain, set `CORS_ALLOW_ORIGINS` on the backend to that exact origin, such as `https://audit.example.com`.
-5. Verify the backend `/health` endpoint and submit a small test image from the deployed site.
+### Deploy the backend to AWS
 
-The backend stores scans in SQLite and reports in `backend/data/reports/`. Use persistent storage on the backend host; ephemeral filesystems can lose scan history and reports on restart. The frontend-only Vercel deployment does not host the FastAPI service or its database.
+Prerequisites: an AWS account with permissions to create ECR, App Runner, DynamoDB, IAM, and CloudFormation resources; AWS CLI configured for that account; Docker; and an OpenAI API key. AWS usage can incur charges.
+
+1. In AWS Secrets Manager, create a secret and store the OpenAI key as its `SecretString`. Copy the full secret ARN. Do not put the secret value in a command, repository, or frontend setting.
+2. From the repository root, set the deployment inputs and run:
+
+   ```bash
+   export AWS_REGION=ap-south-1
+   export OPENAI_SECRET_ARN='arn:aws:secretsmanager:ap-south-1:123456789012:secret:nyay/openai-key-AbCdEf'
+   export FRONTEND_ORIGIN='https://your-project.vercel.app'
+   ./aws/deploy-backend.sh
+   ```
+
+   Choose the AWS region for the service and table. `FRONTEND_ORIGIN` is optional for `*.vercel.app` deployments; set it to the exact origin when using a custom domain. The script builds the backend image, pushes it to ECR, creates or updates the CloudFormation stack, then prints the API URL. The stack retains scan history if deleted and enables point-in-time recovery.
+3. In Vercel project settings, set `VITE_API_URL` to the printed API URL with no trailing slash, then redeploy the frontend.
+4. Open `<API_URL>/health` and confirm `status` is `ok`, `openai_configured` is `true`, and `persistence` is `dynamodb`. Submit a small package image through the Vercel site.
+
+To deploy an updated backend, rerun the script. Each build gets a distinct image tag and updates the App Runner service. For local development, leave `DYNAMODB_TABLE` empty and SQLite remains in use. The frontend-only Vercel deployment does not host the FastAPI service or its database.
 
 ## Data and security
 
