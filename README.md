@@ -32,6 +32,7 @@ Upload one photo or several views of **the same product**. The multi-image flow 
 - **Conditional penalty schedule:** Statutory stages or caps are shown as conditional guidance. The system does not add separate statutory amounts or infer an offence stage from a photo.
 - **Inspection PDF:** Create a printable officer-oriented report with the image set, extracted details, declaration checklist, conditional penalty schedule, and decision path.
 - **Audit history:** Store and retrieve past scans from SQLite locally or DynamoDB on AWS.
+- **Serverless image flow:** In AWS deployments, the browser uploads package photos directly to a private S3 bucket using short-lived signed URLs. Lambda analyzes the grouped images without routing their bytes through API Gateway.
 - **Offline queue:** When the browser is offline, selected images are saved in IndexedDB and later synchronized as their original single-image or multi-image group.
 - **OpenAI model fallback:** Use the configured primary model and optional fallback model list for vision extraction.
 
@@ -40,12 +41,16 @@ Upload one photo or several views of **the same product**. The multi-image flow 
 ```mermaid
 flowchart LR
     A[Officer selects package photos] --> B[React upload workspace]
-    B --> C[FastAPI validates image type and limits]
-    C --> D[OpenAI vision extracts evidence across views]
-    D --> E[Category-aware rule engine]
-    E --> F[SQLite locally / DynamoDB on AWS]
-    E --> G[Inspection PDF]
-    F --> H[Results and audit history]
+    B --> C{Deployment}
+    C -->|Local| D[FastAPI multipart upload]
+    D --> E[OpenAI vision and category-aware rules]
+    E --> F[SQLite scan history]
+    C -->|AWS| G[Signed S3 image upload]
+    G --> H[API Gateway queues SQS scan job]
+    H --> I[Lambda worker calls OpenAI and applies rules]
+    I --> J[DynamoDB scan and job records]
+    F --> K[Results, history, and generated PDF]
+    J --> K
 ```
 
 The model extracts visible text and classification evidence. The backend rule engine decides which checks apply and calculates the screening score. If the uploaded views cannot be confidently matched to one product, the request is rejected so different products are not silently combined.
@@ -57,7 +62,7 @@ The model extracts visible text and classification evidence. The backend rule en
 | Frontend | React 18, Vite, lucide-react |
 | Backend | Python, FastAPI, Uvicorn |
 | Vision extraction | OpenAI Responses API with structured JSON output |
-| Persistence | SQLite locally; DynamoDB on AWS |
+| Persistence | SQLite locally; DynamoDB on AWS; temporary image objects in S3 |
 | PDF reports | ReportLab |
 | Frontend hosting configuration | Vercel |
 
@@ -73,10 +78,11 @@ The model extracts visible text and classification evidence. The backend rule en
 │   ├── database.py       # SQLite scan history
 │   ├── pdf_generator.py  # Inspection report generation
 │   ├── settings.py       # Backend configuration
+│   ├── worker.py         # SQS-triggered Lambda scan processor
 │   └── requirements.txt
 ├── aws/
-│   ├── app-runner-backend.yaml  # App Runner, DynamoDB, and IAM resources
-│   └── deploy-backend.sh        # Build, push, and deploy backend image
+│   ├── template.yaml      # SAM resources: API Gateway, Lambda, S3, DynamoDB, IAM
+│   └── deploy-backend.sh  # Build and deploy the serverless stack
 ├── frontend/
 │   ├── src/
 │   │   ├── components/   # Upload, results, history, navigation
@@ -161,8 +167,11 @@ Create `backend/.env` for local use. Keep the OpenAI key on the backend; do not 
 | `OPENAI_FALLBACK_MODELS` | `gpt-4.1` | Comma-separated fallback model IDs. |
 | `DATABASE_PATH` | `data/nyay_vision.db` | SQLite database path, relative to `backend/`. |
 | `DYNAMODB_TABLE` | empty | Set on AWS to use DynamoDB instead of local SQLite. |
-| `AWS_DEFAULT_REGION` | SDK default | AWS region for DynamoDB. Set by the App Runner template. |
-| `CORS_ALLOW_ORIGINS` | empty | Optional comma-separated frontend origins, including scheme, for custom domains. |
+| `DYNAMODB_JOBS_TABLE` | empty | AWS scan-job status table for serverless processing. |
+| `AWS_DEFAULT_REGION` | SDK default | AWS region for DynamoDB and S3. Set by the SAM template. |
+| `S3_UPLOAD_BUCKET` | empty | Set on AWS for short-lived direct image uploads. |
+| `OPENAI_SECRET_ARN` | empty | Secrets Manager ARN read by the Lambda function role. |
+| `CORS_ALLOW_ORIGINS` | empty | Optional custom origins for the FastAPI CORS middleware. API Gateway and S3 origins are configured from `FRONTEND_ORIGINS` during deployment. |
 
 The backend also allows local Vite origins and Vercel `*.vercel.app` origins.
 
@@ -171,6 +180,7 @@ The backend also allows local Vite origins and Vercel `*.vercel.app` origins.
 | Variable | Local value | Purpose |
 | --- | --- | --- |
 | `VITE_API_URL` | `http://localhost:8000` | Public base URL of the FastAPI backend. Set at frontend build time. |
+| `VITE_DIRECT_UPLOADS` | `false` | Set to `true` in Vercel for signed S3 uploads and queued Lambda scan processing. |
 
 Use a backend URL with no trailing slash. A browser visiting a Vercel site cannot use `localhost` to reach a backend running on the developer's computer.
 
@@ -194,6 +204,9 @@ All image uploads use `multipart/form-data`.
 | `GET` | `/health` | Service status and whether the OpenAI key is configured. |
 | `POST` | `/scan` | Audit one image. Form field: `file`. |
 | `POST` | `/scan-multi` | Audit several views of one product together. Repeat form field: `files`. |
+| `POST` | `/uploads/presign` | Create short-lived S3 PUT URLs for serverless direct image uploads. |
+| `POST` | `/scan-objects` | Queue uploaded S3 objects as one product audit and return a job ID. |
+| `GET` | `/jobs/{job_id}` | Check whether a queued scan is processing, complete, or failed. |
 | `GET` | `/history?limit=100` | List recent scan records. Maximum limit: 500. |
 | `GET` | `/scan/{scan_id}` | Retrieve a saved scan and its findings. |
 | `GET` | `/report/{scan_id}` | Download the generated PDF report. |
@@ -212,11 +225,11 @@ FastAPI's interactive request interface is available at `/docs` while the backen
 
 ## Deployment
 
-The repository's Vercel configuration builds and serves the frontend. The `aws/` folder deploys the FastAPI backend to AWS App Runner, stores durable scan history in DynamoDB, and reads the OpenAI key from AWS Secrets Manager. App Runner provides the API's HTTPS URL. Its container filesystem is temporary, so reports are generated on demand and scan records live in DynamoDB.
+The repository's Vercel configuration builds and serves the frontend. The `aws/` folder deploys a serverless API using Amazon API Gateway HTTP API, AWS Lambda, and an SQS worker queue. The browser uploads images directly to private S3, then the API queues a job and immediately returns its ID. A Lambda worker processes the images, stores scan history in DynamoDB, and records the job result; the browser polls the job and retrieves the completed scan. Secrets Manager supplies the OpenAI key. The S3 bucket expires leftover uploads after one day; successfully processed uploads are deleted. Reports are generated on demand. This keeps long vision requests off API Gateway's 30-second integration path.
 
 ### Deploy the backend to AWS
 
-Prerequisites: an AWS account with permissions to create ECR, App Runner, DynamoDB, IAM, and CloudFormation resources; AWS CLI configured for that account; Docker; and an OpenAI API key. AWS usage can incur charges.
+Prerequisites: an AWS account with permissions to create API Gateway, Lambda, ECR, S3, DynamoDB, IAM, and CloudFormation resources; AWS CLI, AWS SAM CLI, and Docker; and an OpenAI API key. AWS usage can incur charges.
 
 1. In AWS Secrets Manager, create a secret and store the OpenAI key as its `SecretString`. Copy the full secret ARN. Do not put the secret value in a command, repository, or frontend setting.
 2. From the repository root, set the deployment inputs and run:
@@ -224,20 +237,20 @@ Prerequisites: an AWS account with permissions to create ECR, App Runner, Dynamo
    ```bash
    export AWS_REGION=ap-south-1
    export OPENAI_SECRET_ARN='arn:aws:secretsmanager:ap-south-1:123456789012:secret:nyay/openai-key-AbCdEf'
-   export FRONTEND_ORIGIN='https://your-project.vercel.app'
+   export FRONTEND_ORIGINS='https://your-project.vercel.app'
    ./aws/deploy-backend.sh
    ```
 
-   Choose the AWS region for the service and table. `FRONTEND_ORIGIN` is optional for `*.vercel.app` deployments; set it to the exact origin when using a custom domain. The script builds the backend image, pushes it to ECR, creates or updates the CloudFormation stack, then prints the API URL. The stack retains scan history if deleted and enables point-in-time recovery.
-3. In Vercel project settings, set `VITE_API_URL` to the printed API URL with no trailing slash, then redeploy the frontend.
-4. Open `<API_URL>/health` and confirm `status` is `ok`, `openai_configured` is `true`, and `persistence` is `dynamodb`. Submit a small package image through the Vercel site.
+   Choose the AWS region for the stack. `FRONTEND_ORIGINS` is a comma-separated list of exact origins, with no trailing slash, for example `https://app.vercel.app,https://audit.example.com`. The script builds the API and worker Lambda container images, creates or updates the SAM stack, and prints the API URL. DynamoDB history is retained if the stack is deleted and point-in-time recovery is enabled.
+3. In Vercel project settings, set `VITE_API_URL` to the printed API URL with no trailing slash and `VITE_DIRECT_UPLOADS=true`, then redeploy the frontend. These build-time settings route images directly to private S3 using short-lived signed upload URLs.
+4. Open `<API_URL>/health` and confirm `status` is `ok`, `openai_configured` is `true`, `persistence` is `dynamodb`, and `direct_uploads` is `true`. Submit a small package image through the Vercel site; the UI waits for the queued job to finish.
 
-To deploy an updated backend, rerun the script. Each build gets a distinct image tag and updates the App Runner service. For local development, leave `DYNAMODB_TABLE` empty and SQLite remains in use. The frontend-only Vercel deployment does not host the FastAPI service or its database.
+To deploy an updated backend, rerun the script. Each build gets a distinct ECR image tag. For local development, leave `DYNAMODB_TABLE` and `S3_UPLOAD_BUCKET` empty; SQLite and the existing multipart upload API remain in use. The frontend-only Vercel deployment does not host the FastAPI service or its database.
 
 ## Data and security
 
 - Keep `OPENAI_API_KEY` in the backend environment only. Never commit `.env` files or expose the key in frontend code.
-- Image bytes are sent from the backend to the configured OpenAI model for extraction. Use only images you are authorized to process.
+- AWS deployment images are uploaded to a private S3 bucket with short-lived signed URLs, then sent by the worker to the configured OpenAI model for extraction. Use only images you are authorized to process.
 - Offline uploads are held in the user's browser IndexedDB until the backend is reachable and the group can sync.
 - The backend database contains scan metadata and extracted results. Apply access control, backups, retention, and persistent storage appropriate to your deployment.
 - Restrict custom CORS origins to the frontend domains you control.

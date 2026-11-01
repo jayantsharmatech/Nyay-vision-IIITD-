@@ -38,7 +38,7 @@ MULTI_SCHEMA["required"].extend(["same_product", "product_match_confidence"])
 async def _extract_images(images: list[tuple[bytes, str, str]], *, multi: bool) -> dict:
     if not settings.openai_api_key:
         raise RuntimeError("OpenAI API key is not configured. Add OPENAI_API_KEY to backend/.env and restart the API.")
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=110.0, max_retries=0)
     content = []
     for index, (image, content_type, filename) in enumerate(images):
         data_url = f"data:{content_type};base64,{base64.b64encode(image).decode('ascii')}"

@@ -1,0 +1,230 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless Nyay Vision API using Lambda, API Gateway, S3, and DynamoDB.
+
+Parameters:
+  OpenAISecretArn:
+    Type: String
+    Description: ARN of a Secrets Manager secret whose SecretString is the raw OpenAI API key.
+  FrontendOrigins:
+    Type: CommaDelimitedList
+    Description: Exact web origins allowed to access the API and upload objects, e.g. https://app.vercel.app.
+
+Resources:
+  ScanHistory:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: scan_id
+          AttributeType: S
+        - AttributeName: history_partition
+          AttributeType: S
+        - AttributeName: history_sort
+          AttributeType: S
+      KeySchema:
+        - AttributeName: scan_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: history-index
+          KeySchema:
+            - AttributeName: history_partition
+              KeyType: HASH
+            - AttributeName: history_sort
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Application
+          Value: NyayVision
+
+  ScanJobs:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  PackageImageUploads:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: !Ref FrontendOrigins
+            AllowedMethods: [PUT, HEAD]
+            AllowedHeaders: ['*']
+            ExposedHeaders: [ETag]
+            MaxAge: 1800
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTemporaryPackageImages
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: 1
+      Tags:
+        - Key: Application
+          Value: NyayVision
+
+  ServerlessHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: !Ref FrontendOrigins
+        AllowHeaders: [content-type, authorization]
+        AllowMethods: [GET, POST, OPTIONS]
+        MaxAge: 1800
+        AllowCredentials: false
+
+  ScanDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  ScanQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 1860
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ScanDeadLetterQueue.Arn
+        maxReceiveCount: 2
+
+  NyayVisionApi:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ../backend
+      DockerTag: release
+    Properties:
+      PackageType: Image
+      Architectures: [x86_64]
+      MemorySize: 2048
+      Timeout: 180
+      Events:
+        ApiProxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref ServerlessHttpApi
+            Path: /{proxy+}
+            Method: ANY
+            PayloadFormatVersion: '2.0'
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref ScanHistory
+          DYNAMODB_JOBS_TABLE: !Ref ScanJobs
+          AWS_DEFAULT_REGION: !Ref AWS::Region
+          S3_UPLOAD_BUCKET: !Ref PackageImageUploads
+          SCAN_QUEUE_URL: !Ref ScanQueue
+          OPENAI_SECRET_ARN: !Ref OpenAISecretArn
+          CORS_ALLOW_ORIGINS:
+            Fn::Join:
+              - ','
+              - !Ref FrontendOrigins
+      Policies:
+        - Statement:
+            - Sid: ScanHistoryAccess
+              Effect: Allow
+              Action: ['dynamodb:GetItem', 'dynamodb:Query']
+              Resource:
+                - !GetAtt ScanHistory.Arn
+                - !Sub '${ScanHistory.Arn}/index/history-index'
+            - Sid: ScanJobAccess
+              Effect: Allow
+              Action: ['dynamodb:GetItem', 'dynamodb:PutItem']
+              Resource: !GetAtt ScanJobs.Arn
+            - Sid: QueueScanJobs
+              Effect: Allow
+              Action: ['sqs:SendMessage']
+              Resource: !GetAtt ScanQueue.Arn
+            - Sid: PackageImageAccess
+              Effect: Allow
+              Action: ['s3:PutObject', 's3:GetObject', 's3:DeleteObject']
+              Resource: !Sub '${PackageImageUploads.Arn}/uploads/*'
+            - Sid: ReadOpenAISecret
+              Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref OpenAISecretArn
+      ImageConfig:
+        Command: [main.lambda_handler]
+
+  ScanWorker:
+    Type: AWS::Serverless::Function
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ../backend
+      DockerTag: release
+    Properties:
+      PackageType: Image
+      Architectures: [x86_64]
+      MemorySize: 2048
+      Timeout: 300
+      ImageConfig:
+        Command: [worker.handler]
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref ScanHistory
+          DYNAMODB_JOBS_TABLE: !Ref ScanJobs
+          AWS_DEFAULT_REGION: !Ref AWS::Region
+          S3_UPLOAD_BUCKET: !Ref PackageImageUploads
+          OPENAI_SECRET_ARN: !Ref OpenAISecretArn
+      Policies:
+        - Statement:
+            - Sid: WriteScanHistory
+              Effect: Allow
+              Action: ['dynamodb:PutItem']
+              Resource: !GetAtt ScanHistory.Arn
+            - Sid: UpdateScanJobs
+              Effect: Allow
+              Action: ['dynamodb:GetItem', 'dynamodb:PutItem']
+              Resource: !GetAtt ScanJobs.Arn
+            - Sid: ProcessPackageImages
+              Effect: Allow
+              Action: ['s3:GetObject', 's3:DeleteObject']
+              Resource: !Sub '${PackageImageUploads.Arn}/uploads/*'
+            - Sid: ReadOpenAISecret
+              Effect: Allow
+              Action: ['secretsmanager:GetSecretValue']
+              Resource: !Ref OpenAISecretArn
+      Events:
+        ScanJobs:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ScanQueue.Arn
+            BatchSize: 1
+            Enabled: true
+
+Outputs:
+  ApiUrl:
+    Description: HTTPS base URL for Nyay Vision.
+    Value: !Sub 'https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  ScanHistoryTable:
+    Description: DynamoDB table storing scan records.
+    Value: !Ref ScanHistory
+  UploadBucket:
+    Description: Private S3 bucket used for temporary direct image uploads.
+    Value: !Ref PackageImageUploads

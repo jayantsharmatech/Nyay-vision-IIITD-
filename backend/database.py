@@ -24,6 +24,14 @@ def _dynamodb_table():
     resource = boto3.resource("dynamodb", region_name=region)
     return resource.Table(settings.dynamodb_table)
 
+@lru_cache(maxsize=1)
+def _dynamodb_jobs_table():
+    if not settings.dynamodb_jobs_table:
+        return None
+    import boto3
+    region = settings.aws_region or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None
+    return boto3.resource("dynamodb", region_name=region).Table(settings.dynamodb_jobs_table)
+
 def initialize():
     if _dynamodb_table():
         return
@@ -76,6 +84,19 @@ def list_scans(limit=100):
     with _connect() as conn:
         rows = conn.execute("SELECT payload FROM scans ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [json.loads(row["payload"]) for row in rows]
+
+def save_job(job):
+    table = _dynamodb_jobs_table()
+    if table is None:
+        raise RuntimeError("Asynchronous scan jobs require the AWS jobs table.")
+    table.put_item(Item=job)
+
+def get_job(job_id):
+    table = _dynamodb_jobs_table()
+    if table is None:
+        return None
+    item = table.get_item(Key={"job_id": job_id}, ConsistentRead=True).get("Item")
+    return item
 
 def queue_offline(payload):
     with _connect() as conn:
