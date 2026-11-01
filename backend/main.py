@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 
 from database import initialize, get_scan, list_scans, save_scan
 from date_engine import normalize_dates
-from extraction import extract_label
+from extraction import extract_label, extract_product_views
 from pdf_generator import create_report
 from rule_engine import evaluate_compliance
 
@@ -32,20 +32,38 @@ def health() -> dict[str, Any]:
     from settings import settings
     return {"status": "ok", "service": "nyay-vision", "openai_configured": bool(settings.openai_api_key)}
 
-async def _scan(file: UploadFile) -> dict[str, Any]:
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(415, "Upload a packaging photo in PNG, JPG, or WEBP format.")
-    payload = await file.read()
-    if len(payload) > 12 * 1024 * 1024:
-        raise HTTPException(413, "Image must be smaller than 12 MB.")
+async def _scan_group(files: list[UploadFile]) -> dict[str, Any]:
+    if not files:
+        raise HTTPException(400, "Select at least one package image.")
+    if len(files) > 10:
+        raise HTTPException(400, "A product audit can contain up to 10 images.")
+    images = []
+    total_size = 0
+    for item in files:
+        if item.content_type not in {"image/png", "image/jpeg", "image/webp"}:
+            raise HTTPException(415, f"{item.filename or 'A file'} is not an image. Upload PNG, JPG, or WEBP photos.")
+        payload = await item.read()
+        if len(payload) > 12 * 1024 * 1024:
+            raise HTTPException(413, f"{item.filename or 'Image'} is larger than 12 MB.")
+        total_size += len(payload)
+        if total_size > 48 * 1024 * 1024:
+            raise HTTPException(413, "The combined images must be smaller than 48 MB.")
+        images.append((payload, item.content_type, item.filename or f"package view {len(images) + 1}"))
     try:
-        extracted = await extract_label(payload, file.content_type)
+        if len(images) == 1:
+            extracted = await extract_label(images[0][0], images[0][1])
+        else:
+            extracted = await extract_product_views(images)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
+    if len(images) > 1 and (not extracted.get("same_product") or extracted.get("product_match_confidence", 0) < 0.65):
+        raise HTTPException(422, "These photos could not be confidently matched to one product. Upload views of the same product together, or scan different products separately.")
     extracted = normalize_dates(extracted)
+    extracted["image_count"] = len(images)
+    extracted["source_images"] = [name for _, _, name in images]
     audit = evaluate_compliance(extracted)
     scan_id = str(uuid4())
-    record = {"scan_id": scan_id, "created_at": datetime.now(timezone.utc).isoformat(), "filename": file.filename or "package image", "category": audit["category"]["id"], "category_info": audit["category"], "extraction": extracted, "audit": audit, "sync_status": "synced"}
+    record = {"scan_id": scan_id, "created_at": datetime.now(timezone.utc).isoformat(), "filename": ", ".join(name for _, _, name in images), "image_count": len(images), "image_files": [name for _, _, name in images], "category": audit["category"]["id"], "category_info": audit["category"], "extraction": extracted, "audit": audit, "sync_status": "synced"}
     save_scan(record)
     pdf_path = REPORTS / f"{scan_id}.pdf"
     create_report(record, pdf_path)
@@ -53,21 +71,11 @@ async def _scan(file: UploadFile) -> dict[str, Any]:
 
 @app.post("/scan")
 async def scan(file: UploadFile = File(...)) -> dict[str, Any]:
-    return await _scan(file)
+    return await _scan_group([file])
 
 @app.post("/scan-multi")
 async def scan_multi(files: list[UploadFile] = File(...)) -> dict[str, Any]:
-    if not files:
-        raise HTTPException(400, "Select at least one package image.")
-    if len(files) > 10:
-        raise HTTPException(400, "A batch can contain up to 10 images.")
-    results = []
-    for item in files:
-        try:
-            results.append(await _scan(item))
-        except HTTPException as exc:
-            results.append({"filename": item.filename, "error": exc.detail})
-    return {"results": results, "total": len(files), "completed": sum("scan_id" in row for row in results)}
+    return await _scan_group(files)
 
 @app.get("/history")
 def history(limit: int = 100) -> dict[str, Any]:

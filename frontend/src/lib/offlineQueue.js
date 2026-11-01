@@ -8,11 +8,16 @@ function openDb() {
   })
 }
 export async function queueUpload(file) {
+  return queueUploads([file])
+}
+export async function queueUploads(files) {
   const db = await openDb()
+  const groupId = crypto.randomUUID()
   return new Promise((resolve, reject) => {
     const tx = db.transaction('uploads', 'readwrite')
-    tx.objectStore('uploads').add({ file, name: file.name, type: file.type, queuedAt: new Date().toISOString() })
-    tx.oncomplete = () => resolve()
+    const store = tx.objectStore('uploads')
+    files.forEach(file => store.add({ file, name: file.name, type: file.type, groupId, queuedAt: new Date().toISOString() }))
+    tx.oncomplete = () => resolve(groupId)
     tx.onerror = () => reject(tx.error)
   })
 }

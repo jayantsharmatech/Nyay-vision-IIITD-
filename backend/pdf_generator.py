@@ -66,6 +66,7 @@ def create_report(record, path):
     meta = [
         [_p("INSPECTION ID", styles["MetaHead"]), _p(record["scan_id"][:13].upper(), styles["Cell"]), _p("ISSUED", styles["MetaHead"]), _p(created, styles["Cell"])],
         [_p("AUTO CATEGORY", styles["MetaHead"]), _p(f"{category_name} ({round(category.get('confidence', 0)*100)}% confidence)", styles["Cell"]), _p("VISION MODEL", styles["MetaHead"]), _p(ext.get("model_used", "OpenAI"), styles["Cell"])],
+        [_p("IMAGE VIEWS", styles["MetaHead"]), _p(record.get("image_count", ext.get("image_count", 1)), styles["Cell"]), _p("SOURCE FILES", styles["MetaHead"]), _p("; ".join(record.get("image_files", ext.get("source_images", []))) or record.get("filename", "package image"), styles["Cell"])],
     ]
     t = Table(meta, colWidths=[27*mm, 57*mm, 26*mm, 56*mm])
     t.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#F1F5F8")), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("LEFTPADDING", (0,0), (-1,-1), 6), ("RIGHTPADDING", (0,0), (-1,-1), 6), ("TOPPADDING", (0,0), (-1,-1), 7), ("BOTTOMPADDING", (0,0), (-1,-1), 7), ("GRID", (0,0), (-1,-1), 0.5, colors.white)]))
